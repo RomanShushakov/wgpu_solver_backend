@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = [
-  "crates/wgpu_solver_backend",
-  "crates/wgpu_solver_backend_cli",
-]
+members = ["crates/wgpu_solver_backend", "crates/wgpu_solver_backend_cli"]
+
+[workspace.dependencies]
+futures = "0.3.31"
+wgpu = "28.0.0"

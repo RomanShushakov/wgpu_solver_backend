@@ -1,9 +1,15 @@
+use bytemuck::Pod;
+use std::marker::PhantomData;
+use std::mem::size_of;
 use thiserror::Error;
 use wgpu::{
-    Adapter, Backends, Device, DeviceDescriptor, DeviceType, ExperimentalFeatures, Features,
-    Instance, InstanceDescriptor, Limits, MemoryHints, PowerPreference, Queue,
-    RequestAdapterOptions, Trace,
+    Adapter, Backends, BufferDescriptor, BufferUsages, Device, DeviceDescriptor, DeviceType,
+    ExperimentalFeatures, Features, Instance, InstanceDescriptor, Limits, MemoryHints,
+    PowerPreference, Queue, RequestAdapterOptions, Trace,
+    util::{BufferInitDescriptor, DeviceExt},
 };
+
+use crate::gpu::{buffer::GpuBuffer, readback::readback_to_vec};
 
 #[derive(Debug, Error)]
 pub enum GpuError {
@@ -111,5 +117,62 @@ impl GpuContext {
             self.adapter_info.vendor,
             self.adapter_info.device
         )
+    }
+
+    pub fn create_storage_buffer<T: Pod>(
+        &self,
+        label: &str,
+        data: &[T],
+        extra_usage: BufferUsages,
+    ) -> GpuBuffer<T> {
+        let usage =
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST | extra_usage;
+
+        let buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(data),
+            usage,
+        });
+
+        GpuBuffer {
+            buffer,
+            len: data.len(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn create_storage_buffer_uninit<T: Pod>(
+        &self,
+        label: &str,
+        len: usize,
+        extra_usage: BufferUsages,
+    ) -> GpuBuffer<T> {
+        let byte_len = (len * size_of::<T>()) as u64;
+        let usage =
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST | extra_usage;
+
+        let buffer = self.device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: byte_len,
+            usage,
+            mapped_at_creation: false,
+        });
+
+        GpuBuffer {
+            buffer,
+            len,
+            _marker: PhantomData,
+        }
+    }
+
+    pub async fn readback<T: Pod>(&self, buf: &GpuBuffer<T>) -> Vec<T> {
+        readback_to_vec::<T>(
+            &self.device,
+            &self.queue,
+            &buf.buffer,
+            buf.len,
+            Some("readback_staging"),
+        )
+        .await
     }
 }
