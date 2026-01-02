@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::to_string_pretty;
 use std::process::exit;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use wgpu_solver_backend::compute::vec_ops_exec::VecOpsExecutor;
 use wgpu_solver_backend::gpu::context::{GpuBackend, GpuContext};
 
 #[derive(Parser, Debug)]
@@ -24,6 +25,8 @@ struct Cli {
 enum Command {
     /// Print GPU adapter info and emit a metrics JSON blob (stdout).
     Info,
+    /// Sanity test for vec ops (AXPY): y = y + alpha * x
+    VecTest,
 }
 
 #[derive(Serialize)]
@@ -68,6 +71,48 @@ fn now_utc_rfc3339() -> String {
         .unwrap_or_else(|_| "unknown-time".to_string())
 }
 
+fn run_vec_test(ctx: &GpuContext) {
+    let n: usize = 1024;
+    let alpha: f32 = 3.0;
+
+    let x_host = vec![2.0f32; n];
+    let y_host = vec![1.0f32; n];
+
+    // Create GPU buffers.
+    // We want STORAGE for compute + COPY_SRC for readback + COPY_DST for init/updates.
+    let x = ctx.create_storage_buffer("x", &x_host, wgpu::BufferUsages::empty());
+    let y = ctx.create_storage_buffer("y", &y_host, wgpu::BufferUsages::empty());
+
+    // Create executor (pipelines + uniform pool).
+    let vec_exec = VecOpsExecutor::create(ctx);
+    vec_exec.reset_params_cursor();
+
+    // Encode.
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("vec-test encoder"),
+        });
+
+    vec_exec.encode_axpy_inplace(ctx, &mut encoder, &x.buffer, &y.buffer, n as u32, alpha);
+
+    // Submit exactly once (matches your model).
+    ctx.queue.submit(Some(encoder.finish()));
+
+    // Read back and assert.
+    let y_out = block_on(ctx.readback(&y));
+
+    let expected = 1.0f32 + alpha * 2.0f32; // 7.0
+    for (i, v) in y_out.iter().enumerate() {
+        assert!(
+            (*v - expected).abs() < 1e-6,
+            "vec-test failed at i={i}: got {v}, expected {expected}"
+        );
+    }
+
+    println!("VecTest OK: all y[i] == {expected}");
+}
+
 fn main() {
     let cli = Cli::parse();
     let gpu_backend = parse_backend(&cli.backend);
@@ -100,6 +145,14 @@ fn main() {
             };
 
             println!("{}", to_string_pretty(&m).unwrap());
+        }
+        Command::VecTest => {
+            let ctx: GpuContext = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+                eprintln!("Failed to init GPU context: {e}");
+                exit(2);
+            });
+
+            run_vec_test(&ctx);
         }
     }
 }

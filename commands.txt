@@ -1,2 +1,4 @@
 cargo run -p wgpu_solver_backend_cli -- info
 cargo run -p wgpu_solver_backend_cli -- --backend vulkan info
+
+cargo run -p wgpu_solver_backend_cli -- vec-test
