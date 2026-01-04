@@ -3,8 +3,8 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use thiserror::Error;
 use wgpu::{
-    Adapter, Backends, BufferDescriptor, BufferUsages, Device, DeviceDescriptor, DeviceType,
-    ExperimentalFeatures, Features, Instance, InstanceDescriptor, Limits, MemoryHints,
+    Adapter, Backend, Backends, BufferDescriptor, BufferUsages, Device, DeviceDescriptor,
+    DeviceType, ExperimentalFeatures, Features, Instance, InstanceDescriptor, Limits, MemoryHints,
     PowerPreference, Queue, RequestAdapterOptions, Trace,
     util::{BufferInitDescriptor, DeviceExt},
 };
@@ -33,7 +33,7 @@ pub struct AdapterInfo {
     pub vendor: u32,
     pub device: u32,
     pub device_type: DeviceType,
-    pub backend: wgpu::Backend,
+    pub backend: Backend,
 }
 
 #[derive(Debug)]
