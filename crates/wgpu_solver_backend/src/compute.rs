@@ -3,6 +3,8 @@ pub mod block_jacobi_exec;
 pub mod dot_partials;
 pub mod dot_reduce;
 pub mod dot_scalar_exec;
+pub mod pcg_update_scalars;
+pub mod pcg_update_scalars_exec;
 pub mod spmv;
 pub mod spmv_exec;
 pub mod vec_ops;

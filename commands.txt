@@ -8,3 +8,5 @@ cargo run -p wgpu_solver_backend_cli -- dot-test
 cargo run -p wgpu_solver_backend_cli -- spmv-test
 
 cargo run -p wgpu_solver_backend_cli -- block-jacobi-test
+
+cargo run -p wgpu_solver_backend_cli -- pcg-update-scalars-test

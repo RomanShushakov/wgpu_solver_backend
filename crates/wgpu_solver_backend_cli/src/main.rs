@@ -7,6 +7,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wgpu::{BufferUsages, CommandEncoderDescriptor};
 use wgpu_solver_backend::compute::block_jacobi_exec::BlockJacobiExecutor;
 use wgpu_solver_backend::compute::dot_scalar_exec::DotScalarExecutor;
+use wgpu_solver_backend::compute::pcg_update_scalars_exec::PcgUpdateScalarsExecutor;
 use wgpu_solver_backend::compute::spmv_exec::SpmvExecutor;
 use wgpu_solver_backend::compute::vec_ops_exec::VecOpsExecutor;
 use wgpu_solver_backend::gpu::context::{GpuBackend, GpuContext};
@@ -35,6 +36,7 @@ enum Command {
     DotTest,
     SpmvTest,
     BlockJacobiTest,
+    PcgUpdateScalarsTest,
 }
 
 #[derive(Serialize)]
@@ -278,6 +280,81 @@ fn run_block_jacobi_test(ctx: &GpuContext) {
     println!("BlockJacobiTest OK: z == r (identity blocks)");
 }
 
+const PAP: u32 = 0;
+const RZ_NEW: u32 = 1;
+const RZ_OLD: u32 = 2;
+const ALPHA: u32 = 3;
+const MINUS_ALPHA: u32 = 4;
+const BETA: u32 = 5;
+
+fn run_pcg_update_scalars_test(ctx: &GpuContext) {
+    // Scalar buffer with a few slots.
+    let scalar_len = 8usize;
+
+    // Host init: we set only the inputs; outputs can start at 0.
+    let mut host = vec![0.0f32; scalar_len];
+
+    // pAp = 2, rz_old = 10, rz_new = 5
+    host[PAP as usize] = 2.0;
+    host[RZ_OLD as usize] = 10.0;
+    host[RZ_NEW as usize] = 5.0;
+
+    let scalar_gpu = ctx.create_storage_buffer(
+        "pcg_update_scalars_test scalar_results",
+        &host,
+        BufferUsages::COPY_SRC, // for readback
+    );
+
+    let exec = PcgUpdateScalarsExecutor::create(ctx);
+    exec.reset_params_cursor();
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("pcg_update_scalars_test encoder"),
+        });
+
+    exec.encode_update_scalars(
+        ctx,
+        &mut encoder,
+        &scalar_gpu.buffer,
+        PAP,
+        RZ_NEW,
+        RZ_OLD,
+        ALPHA,
+        MINUS_ALPHA,
+        BETA,
+    );
+
+    ctx.queue.submit(Some(encoder.finish()));
+
+    let out = block_on(ctx.readback(&scalar_gpu));
+
+    let alpha = out[ALPHA as usize];
+    let minus_alpha = out[MINUS_ALPHA as usize];
+    let beta = out[BETA as usize];
+
+    let exp_alpha = 10.0 / 2.0; // 5
+    let exp_minus_alpha = -exp_alpha; // -5
+    let exp_beta = 5.0 / 10.0; // 0.5
+
+    let eps = 1e-6;
+    assert!(
+        (alpha - exp_alpha).abs() < eps,
+        "alpha got {alpha}, expected {exp_alpha}"
+    );
+    assert!(
+        (minus_alpha - exp_minus_alpha).abs() < eps,
+        "minus_alpha got {minus_alpha}, expected {exp_minus_alpha}"
+    );
+    assert!(
+        (beta - exp_beta).abs() < eps,
+        "beta got {beta}, expected {exp_beta}"
+    );
+
+    println!("PcgUpdateScalarsTest OK: alpha={alpha}, minus_alpha={minus_alpha}, beta={beta}");
+}
+
 fn main() {
     let cli = Cli::parse();
     let gpu_backend = parse_backend(&cli.backend);
@@ -336,13 +413,20 @@ fn main() {
             run_spmv_test(&ctx);
         }
         Command::BlockJacobiTest => {
-            let ctx =
-                futures::executor::block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
-                    eprintln!("Failed to init GPU context: {e}");
-                    std::process::exit(2);
-                });
+            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+                eprintln!("Failed to init GPU context: {e}");
+                exit(2);
+            });
 
             run_block_jacobi_test(&ctx);
+        }
+        Command::PcgUpdateScalarsTest => {
+            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+                eprintln!("Failed to init GPU context: {e}");
+                exit(2);
+            });
+
+            run_pcg_update_scalars_test(&ctx);
         }
     }
 }
