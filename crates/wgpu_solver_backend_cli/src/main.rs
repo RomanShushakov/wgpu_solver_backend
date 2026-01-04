@@ -6,6 +6,7 @@ use std::process::exit;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wgpu::{BufferUsages, CommandEncoderDescriptor};
 use wgpu_solver_backend::compute::dot_scalar_exec::DotScalarExecutor;
+use wgpu_solver_backend::compute::spmv_exec::SpmvExecutor;
 use wgpu_solver_backend::compute::vec_ops_exec::VecOpsExecutor;
 use wgpu_solver_backend::gpu::context::{GpuBackend, GpuContext};
 
@@ -30,6 +31,7 @@ enum Command {
     /// Sanity test for vec ops (AXPY): y = y + alpha * x
     VecTest,
     DotTest,
+    SpmvTest,
 }
 
 #[derive(Serialize)]
@@ -83,8 +85,8 @@ fn run_vec_test(ctx: &GpuContext) {
 
     // Create GPU buffers.
     // We want STORAGE for compute + COPY_SRC for readback + COPY_DST for init/updates.
-    let x = ctx.create_storage_buffer("x", &x_host, wgpu::BufferUsages::empty());
-    let y = ctx.create_storage_buffer("y", &y_host, wgpu::BufferUsages::empty());
+    let x = ctx.create_storage_buffer("x", &x_host, BufferUsages::empty());
+    let y = ctx.create_storage_buffer("y", &y_host, BufferUsages::empty());
 
     // Create executor (pipelines + uniform pool).
     let vec_exec = VecOpsExecutor::create(ctx);
@@ -93,7 +95,7 @@ fn run_vec_test(ctx: &GpuContext) {
     // Encode.
     let mut encoder = ctx
         .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        .create_command_encoder(&CommandEncoderDescriptor {
             label: Some("vec-test encoder"),
         });
 
@@ -153,6 +155,73 @@ fn run_dot_test(ctx: &GpuContext) {
     println!("DotTest OK: got {got}");
 }
 
+fn run_spmv_test(ctx: &wgpu_solver_backend::gpu::context::GpuContext) {
+    // 3x3 matrix:
+    // [ 10 0  2 ]
+    // [ 3  9  0 ]
+    // [ 0  7  8 ]
+    //
+    // CSR:
+    // row_ptr = [0, 2, 4, 6]
+    // col_idx = [0,2, 0,1, 1,2]
+    // vals    = [10,2, 3,9, 7,8]
+    //
+    // x = [1,2,3]
+    // y = [16, 21, 38]
+
+    let n_rows: u32 = 3;
+
+    let row_ptr: Vec<u32> = vec![0, 2, 4, 6];
+    let col_idx: Vec<u32> = vec![0, 2, 0, 1, 1, 2];
+    let values: Vec<f32> = vec![10.0, 2.0, 3.0, 9.0, 7.0, 8.0];
+
+    let x_host: Vec<f32> = vec![1.0, 2.0, 3.0];
+    let expected: Vec<f32> = vec![16.0, 21.0, 38.0];
+
+    // Upload x as a standalone GPU buffer (like your iteration vectors).
+    let x_gpu = ctx.create_storage_buffer("spmv-test x_src", &x_host, BufferUsages::empty());
+
+    // Create executor (owns CSR + internal x/y buffers).
+    let spmv = SpmvExecutor::create(ctx, n_rows, &row_ptr, &col_idx, &values);
+
+    // Encode: copy x into internal x_buffer, then SpMV into internal y_buffer.
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("spmv-test encoder"),
+        });
+
+    // n_bytes = n_rows * sizeof(f32)
+    spmv.encode_copy_x_from(&mut encoder, &x_gpu.buffer, (n_rows as u64) * 4);
+    spmv.encode_spmv(&mut encoder);
+
+    // Single submit (matches your model).
+    ctx.queue.submit(Some(encoder.finish()));
+
+    // Read back y.
+    // y_buffer length is n_rows f32.
+    let y_out: Vec<f32> = block_on(wgpu_solver_backend::gpu::readback::readback_to_vec::<f32>(
+        &ctx.device,
+        &ctx.queue,
+        spmv.y_buffer(),
+        n_rows as usize,
+        Some("spmv-test y readback"),
+    ));
+
+    assert_eq!(y_out.len(), expected.len());
+
+    for i in 0..expected.len() {
+        let got = y_out[i];
+        let exp = expected[i];
+        assert!(
+            (got - exp).abs() < 1e-6,
+            "spmv-test failed at i={i}: got {got}, expected {exp}"
+        );
+    }
+
+    println!("SpmvTest OK: y == {:?}", y_out);
+}
+
 fn main() {
     let cli = Cli::parse();
     let gpu_backend = parse_backend(&cli.backend);
@@ -197,10 +266,18 @@ fn main() {
         Command::DotTest => {
             let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
                 eprintln!("Failed to init GPU context: {e}");
-                std::process::exit(2);
+                exit(2);
             });
 
             run_dot_test(&ctx);
+        }
+        Command::SpmvTest => {
+            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+                eprintln!("Failed to init GPU context: {e}");
+                exit(2);
+            });
+
+            run_spmv_test(&ctx);
         }
     }
 }

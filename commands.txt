@@ -4,3 +4,5 @@ cargo run -p wgpu_solver_backend_cli -- --backend vulkan info
 cargo run -p wgpu_solver_backend_cli -- vec-test
 
 cargo run -p wgpu_solver_backend_cli -- dot-test
+
+cargo run -p wgpu_solver_backend_cli -- spmv-test
