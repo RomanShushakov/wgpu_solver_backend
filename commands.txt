@@ -10,3 +10,45 @@ cargo run -p wgpu_solver_backend_cli -- spmv-test
 cargo run -p wgpu_solver_backend_cli -- block-jacobi-test
 
 cargo run -p wgpu_solver_backend_cli -- pcg-update-scalars-test
+
+cargo run -p wgpu_solver_backend_convert_cli -- text-to-bin \
+  --input ./datasets/pcg_block_jacobi_dataset_1.txt \
+  --out-dir ./input/case_1 --force
+
+cargo run -p wgpu_solver_backend_convert_cli -- text-to-bin \
+  --input ./datasets/pcg_block_jacobi_dataset_2.txt \
+  --out-dir ./input/case_2 --force
+
+cargo run -p wgpu_solver_backend_convert_cli -- text-to-bin \
+  --input ./datasets/pcg_block_jacobi_dataset_3.txt \
+  --out-dir ./input/case_3 --force
+
+cargo run -p wgpu_solver_backend_cli -- \
+  --backend auto \
+  run-pcg-case \
+  --case-dir ./input/case_1 \
+  --max-iters 2000 \
+  --rel-tol 1e-4 \
+  --abs-tol 1e-7 \
+  --out-x ./output/case_1/x.bin \
+  --out-metrics ./output/case_1/metrics.json
+
+cargo run -p wgpu_solver_backend_cli -- \
+  --backend auto \
+  run-pcg-case \
+  --case-dir ./input/case_2 \
+  --max-iters 2000 \
+  --rel-tol 1e-4 \
+  --abs-tol 1e-7 \
+  --out-x ./output/case_2/x.bin \
+  --out-metrics ./output/case_2/metrics.json
+
+cargo run -p wgpu_solver_backend_cli -- \
+  --backend auto \
+  run-pcg-case \
+  --case-dir ./input/case_3 \
+  --max-iters 2000 \
+  --rel-tol 1e-4 \
+  --abs-tol 1e-7 \
+  --out-x ./output/case_3/x.bin \
+  --out-metrics ./output/case_3/metrics.json

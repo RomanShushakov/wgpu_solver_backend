@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
-use futures::executor::block_on;
+use futures::executor;
 use serde::Serialize;
 use serde_json::to_string_pretty;
-use std::process::exit;
+use std::fs;
+use std::path::Path;
+use std::process;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wgpu::{BufferUsages, CommandEncoderDescriptor};
 use wgpu_solver_backend::compute::block_jacobi_exec::BlockJacobiExecutor;
@@ -10,8 +12,12 @@ use wgpu_solver_backend::compute::dot_scalar_exec::DotScalarExecutor;
 use wgpu_solver_backend::compute::pcg_update_scalars_exec::PcgUpdateScalarsExecutor;
 use wgpu_solver_backend::compute::spmv_exec::SpmvExecutor;
 use wgpu_solver_backend::compute::vec_ops_exec::VecOpsExecutor;
+use wgpu_solver_backend::compute::{
+    build_lu_blocks_from_csr_block_starts_6, pcg_block_jacobi_csr_wgpu,
+};
 use wgpu_solver_backend::gpu::context::{GpuBackend, GpuContext};
 use wgpu_solver_backend::gpu::readback::readback_to_vec;
+use wgpu_solver_backend::io::loaders::load_case_dir;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -37,6 +43,32 @@ enum Command {
     SpmvTest,
     BlockJacobiTest,
     PcgUpdateScalarsTest,
+    /// Run PCG(Block-Jacobi) on a case directory (matrix.csr.bin, rhs.bin, x0.bin, block_starts.bin)
+    RunPcgCase {
+        /// Case directory containing matrix.csr.bin, rhs.bin, x0.bin, block_starts.bin
+        #[arg(long)]
+        case_dir: String,
+
+        /// Max PCG iterations
+        #[arg(long, default_value_t = 2000)]
+        max_iters: usize,
+
+        /// Relative tolerance
+        #[arg(long, default_value_t = 1e-8)]
+        rel_tol: f32,
+
+        /// Absolute tolerance
+        #[arg(long, default_value_t = 0.0)]
+        abs_tol: f32,
+
+        /// Where to write x.bin
+        #[arg(long)]
+        out_x: String,
+
+        /// Where to write metrics.json
+        #[arg(long)]
+        out_metrics: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -60,6 +92,38 @@ struct GpuMetrics {
 struct BuildMetrics {
     crate_version: String,
     git_rev: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SolveMetrics {
+    run_id: String,
+    command: String,
+
+    case_dir: String,
+    n: u32,
+    nnz: u32,
+    max_iters: usize,
+    rel_tol: f32,
+    abs_tol: f32,
+
+    iterations: Option<usize>,
+    converged: bool,
+    error: Option<String>,
+
+    timings_ms: TimingsMs,
+
+    gpu: GpuMetrics,
+    build: BuildMetrics,
+}
+
+#[derive(Serialize)]
+struct TimingsMs {
+    total: u128,
+    load_io: u128,
+    gpu_init: u128,
+    gpu_setup: u128,
+    solve: u128,
+    write_out: u128,
 }
 
 fn parse_backend(s: &str) -> GpuBackend {
@@ -110,7 +174,7 @@ fn run_vec_test(ctx: &GpuContext) {
     ctx.queue.submit(Some(encoder.finish()));
 
     // Read back and assert.
-    let y_out = block_on(ctx.readback(&y));
+    let y_out = executor::block_on(ctx.readback(&y));
 
     let expected = 1.0f32 + alpha * 2.0f32; // 7.0
     for (i, v) in y_out.iter().enumerate() {
@@ -205,7 +269,7 @@ fn run_spmv_test(ctx: &GpuContext) {
 
     // Read back y.
     // y_buffer length is n_rows f32.
-    let y_out: Vec<f32> = block_on(readback_to_vec::<f32>(
+    let y_out: Vec<f32> = executor::block_on(readback_to_vec::<f32>(
         &ctx.device,
         &ctx.queue,
         spmv.y_buffer(),
@@ -265,7 +329,7 @@ fn run_block_jacobi_test(ctx: &GpuContext) {
     ctx.queue.submit(Some(encoder.finish()));
 
     // Read back z
-    let z_out = block_on(ctx.readback(&z_gpu));
+    let z_out = executor::block_on(ctx.readback(&z_gpu));
 
     // Assert z == r
     for i in 0..(n as usize) {
@@ -328,7 +392,7 @@ fn run_pcg_update_scalars_test(ctx: &GpuContext) {
 
     ctx.queue.submit(Some(encoder.finish()));
 
-    let out = block_on(ctx.readback(&scalar_gpu));
+    let out = executor::block_on(ctx.readback(&scalar_gpu));
 
     let alpha = out[ALPHA as usize];
     let minus_alpha = out[MINUS_ALPHA as usize];
@@ -355,22 +419,139 @@ fn run_pcg_update_scalars_test(ctx: &GpuContext) {
     println!("PcgUpdateScalarsTest OK: alpha={alpha}, minus_alpha={minus_alpha}, beta={beta}");
 }
 
+fn write_x_bin(path: &str, x: &[f32]) -> Result<(), String> {
+    use std::fs::{self, File};
+    use std::io::Write;
+    use std::path::Path;
+
+    let p = Path::new(path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+        }
+    }
+
+    let mut f = File::create(p).map_err(|e| format!("create {}: {e}", p.display()))?;
+    let n = x.len() as u32;
+    f.write_all(&n.to_le_bytes()).map_err(|e| e.to_string())?;
+    for &v in x {
+        f.write_all(&v.to_le_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn write_json(path: &str, json: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+        }
+    }
+
+    fs::write(p, json).map_err(|e| format!("write {}: {e}", p.display()))
+}
+
+fn run_pcg_case(
+    ctx: &GpuContext,
+    case_dir: &str,
+    max_iters: usize,
+    rel_tol: f32,
+    abs_tol: f32,
+) -> Result<(usize, Vec<f32>, u32, u32), String> {
+    // Load bin inputs (using your backend io module)
+    let case = load_case_dir(Path::new(case_dir))?;
+
+    let n = case.a.n_rows as usize;
+    let nnz = case.a.nnz;
+
+    // Create executors (once)
+    // SpMV
+    let spmv_exec = SpmvExecutor::create(
+        ctx,
+        case.a.n_rows,
+        &case.a.row_ptr,
+        &case.a.col_idx,
+        &case.a.values,
+    );
+
+    // Vec ops
+    let vec_ops_exec = VecOpsExecutor::create(ctx);
+
+    // Dot scalar (needs >= 7 slots for PCG)
+    let dot_scalar_exec = DotScalarExecutor::create(ctx, n, 7);
+
+    // Build GPU block-Jacobi from LU blocks.
+    //
+    // IMPORTANT:
+    // Your current BlockJacobiExecutor::create signature in CLI tests is:
+    //   create(ctx, n, &lu_blocks, &block_starts)
+    //
+    // That means: you need LU blocks on input.
+    //
+    // But our BIN case currently contains: CSR + block_starts, NOT lu_blocks.
+    //
+    // So we must build lu_blocks from CSR here (like you did earlier in webgpu).
+    //
+    // If you already have a helper in backend compute.rs to build lu_blocks:
+    //   build_lu_blocks_from_csr_block_starts_6(...)
+    // use it here.
+    //
+    // For now, we assume you have (or will add) a function:
+    //   wgpu_solver_backend::compute::block_jacobi_exec::build_lu_blocks_from_csr(...)
+    //
+    // I’ll show you exactly what to add below.
+
+    let lu_blocks = build_lu_blocks_from_csr_block_starts_6(
+        case.a.n_rows as usize,
+        &case.a.row_ptr,
+        &case.a.col_idx,
+        &case.a.values,
+        &case.block_starts.starts,
+    )?;
+
+    let block_jacobi_exec =
+        BlockJacobiExecutor::create(ctx, case.a.n_rows, &lu_blocks, &case.block_starts.starts);
+
+    let pcg_update_scalars_exec = PcgUpdateScalarsExecutor::create(ctx);
+
+    // Solve
+    let mut x = case.x0.values.clone();
+    let iters = pcg_block_jacobi_csr_wgpu(
+        n,
+        &case.b.values,
+        &mut x,
+        max_iters,
+        rel_tol,
+        abs_tol,
+        ctx,
+        &spmv_exec,
+        &vec_ops_exec,
+        &dot_scalar_exec,
+        &block_jacobi_exec,
+        &pcg_update_scalars_exec,
+    )?;
+
+    Ok((iters, x, case.a.n_rows, nnz))
+}
+
 fn main() {
     let cli = Cli::parse();
     let gpu_backend = parse_backend(&cli.backend);
 
     match cli.cmd {
         Command::Info => {
-            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+            let ctx = executor::block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
                 eprintln!("Failed to init GPU context: {e}");
-                exit(2);
+                process::exit(2);
             });
 
             // Human-readable (nice in logs)
             println!("{}", ctx.describe());
 
             // Machine-readable (Slurm-friendly)
-            let m = Metrics {
+            let metrics = Metrics {
                 run_id: now_utc_rfc3339(),
                 command: "info".to_string(),
                 gpu: GpuMetrics {
@@ -386,47 +567,132 @@ fn main() {
                 },
             };
 
-            println!("{}", to_string_pretty(&m).unwrap());
+            println!("{}", to_string_pretty(&metrics).unwrap());
         }
         Command::VecTest => {
-            let ctx: GpuContext = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
-                eprintln!("Failed to init GPU context: {e}");
-                exit(2);
-            });
+            let ctx: GpuContext = executor::block_on(GpuContext::create(gpu_backend))
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to init GPU context: {e}");
+                    process::exit(2);
+                });
 
             run_vec_test(&ctx);
         }
         Command::DotTest => {
-            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+            let ctx = executor::block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
                 eprintln!("Failed to init GPU context: {e}");
-                exit(2);
+                process::exit(2);
             });
 
             run_dot_test(&ctx);
         }
         Command::SpmvTest => {
-            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+            let ctx = executor::block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
                 eprintln!("Failed to init GPU context: {e}");
-                exit(2);
+                process::exit(2);
             });
 
             run_spmv_test(&ctx);
         }
         Command::BlockJacobiTest => {
-            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+            let ctx = executor::block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
                 eprintln!("Failed to init GPU context: {e}");
-                exit(2);
+                process::exit(2);
             });
 
             run_block_jacobi_test(&ctx);
         }
         Command::PcgUpdateScalarsTest => {
-            let ctx = block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+            let ctx = executor::block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
                 eprintln!("Failed to init GPU context: {e}");
-                exit(2);
+                process::exit(2);
             });
 
             run_pcg_update_scalars_test(&ctx);
+        }
+        Command::RunPcgCase {
+            case_dir,
+            max_iters,
+            rel_tol,
+            abs_tol,
+            out_x,
+            out_metrics,
+        } => {
+            use std::time::Instant;
+
+            let t0 = Instant::now();
+            let t_load0 = Instant::now();
+
+            // Create ctx
+            let t_gpu0 = Instant::now();
+            let ctx = executor::block_on(GpuContext::create(gpu_backend)).unwrap_or_else(|e| {
+                eprintln!("Failed to init GPU context: {e}");
+                process::exit(2);
+            });
+            let t_gpu = t_gpu0.elapsed();
+
+            // Solve (includes load inside run_pcg_case for now)
+            let t_solve0 = Instant::now();
+            let result = run_pcg_case(&ctx, &case_dir, max_iters, rel_tol, abs_tol);
+            let t_solve = t_solve0.elapsed();
+
+            let (iterations, x, n, nnz, converged, err) = match result {
+                Ok((iters, x, n, nnz)) => (Some(iters), x, n, nnz, true, None),
+                Err(e) => {
+                    eprintln!("Solve failed: {e}");
+                    (None, Vec::new(), 0, 0, false, Some(e))
+                }
+            };
+
+            let t_write0 = Instant::now();
+            if converged {
+                write_x_bin(&out_x, &x).unwrap_or_else(|e| {
+                    eprintln!("Failed to write x.bin: {e}");
+                    process::exit(2);
+                });
+            }
+            let t_write = t_write0.elapsed();
+
+            let metrics = SolveMetrics {
+                run_id: now_utc_rfc3339(),
+                command: "run_pcg_case".to_string(),
+                case_dir: case_dir.clone(),
+                n,
+                nnz,
+                max_iters,
+                rel_tol,
+                abs_tol,
+                iterations,
+                converged,
+                error: err,
+                timings_ms: TimingsMs {
+                    total: t0.elapsed().as_millis(),
+                    load_io: t_load0.elapsed().as_millis(), // (kept simple; we can refine)
+                    gpu_init: t_gpu.as_millis(),
+                    gpu_setup: 0, // optional: split out later
+                    solve: t_solve.as_millis(),
+                    write_out: t_write.as_millis(),
+                },
+                gpu: GpuMetrics {
+                    adapter_name: ctx.adapter_info.name.clone(),
+                    backend: format!("{:?}", ctx.adapter_info.backend),
+                    device_type: format!("{:?}", ctx.adapter_info.device_type),
+                    vendor: ctx.adapter_info.vendor,
+                    device: ctx.adapter_info.device,
+                },
+                build: BuildMetrics {
+                    crate_version: env!("CARGO_PKG_VERSION").to_string(),
+                    git_rev: option_env!("GIT_REV").map(|s| s.to_string()),
+                },
+            };
+
+            let json = to_string_pretty(&metrics).unwrap();
+            write_json(&out_metrics, &json).unwrap_or_else(|e| {
+                eprintln!("Failed to write metrics: {e}");
+                process::exit(2);
+            });
+
+            println!("{json}");
         }
     }
 }

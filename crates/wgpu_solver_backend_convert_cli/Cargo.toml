@@ -1,0 +1,9 @@
+[package]
+name = "wgpu_solver_backend_convert_cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
