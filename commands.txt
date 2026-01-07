@@ -57,14 +57,22 @@ cargo run -p wgpu_solver_backend_cli -- \
   compare-x \
   --x-ref ./input/case_1/x_ref.bin \
   --x ./output/case_1/x.bin \
-  --rel-tol 1e-2 \
-  --abs-tol 1e-3 \
+  --rel-tol 1e-4 \
+  --abs-tol 1e-7 \
   --top-k 10
 
 cargo run -p wgpu_solver_backend_cli -- \
   compare-x \
   --x-ref ./input/case_2/x_ref.bin \
   --x ./output/case_2/x.bin \
-  --rel-tol 1e-5 \
-  --abs-tol 1e-3 \
+  --rel-tol 1e-4 \
+  --abs-tol 1e-7 \
+  --top-k 10
+
+cargo run -p wgpu_solver_backend_cli -- \
+  compare-x \
+  --x-ref ./input/case_3/x_ref.bin \
+  --x ./output/case_3/x.bin \
+  --rel-tol 1e-4 \
+  --abs-tol 1e-7 \
   --top-k 10

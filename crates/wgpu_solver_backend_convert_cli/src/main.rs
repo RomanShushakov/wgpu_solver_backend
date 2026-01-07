@@ -359,11 +359,10 @@ fn parse_dataset_text_file(path: &Path) -> Result<TextDataset, String> {
             x0.len()
         ));
     }
-    if let Some(xr) = x_ref.as_ref() {
-        if xr.len() != n {
+    if let Some(xr) = x_ref.as_ref()
+        && xr.len() != n {
             return Err(format!("x_ref_f32 len must be n ({}), got {}", n, xr.len()));
         }
-    }
 
     // block_starts sanity: monotonic, first=0, last=n
     if block_starts.is_empty() {

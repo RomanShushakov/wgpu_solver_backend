@@ -46,7 +46,7 @@ impl DotScalarExecutor {
         let dot_reduce_pipeline = create_dot_reduce_pipeline(ctx);
 
         let workgroup_size = 256usize;
-        let max_partials = (n_max + workgroup_size - 1) / workgroup_size;
+        let max_partials = n_max.div_ceil(workgroup_size);
 
         // Scratch buffers: f32 arrays of length max_partials
         let scratch_bytes = (max_partials * std::mem::size_of::<f32>()) as u64;
@@ -196,12 +196,12 @@ impl DotScalarExecutor {
             pass.set_pipeline(&self.dot_partials_pipeline.pipeline);
             pass.set_bind_group(0, &dot_partials_bg, &[]);
 
-            let groups = (n + 256u32 - 1) / 256u32;
+            let groups = n.div_ceil(256u32);
             pass.dispatch_workgroups(groups, 1, 1);
         }
 
         // Number of partials produced by pass 1
-        let mut current_len: u32 = (n + 256u32 - 1) / 256u32;
+        let mut current_len: u32 = n.div_ceil(256u32);
 
         // ---- Pass 2..k: reduce partials until length=1 ----
         let mut current_input = &self.input_buffer;
@@ -220,7 +220,7 @@ impl DotScalarExecutor {
                 current_output,
             );
 
-            let out_len = (current_len + 256u32 - 1) / 256u32;
+            let out_len = current_len.div_ceil(256u32);
 
             {
                 let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {

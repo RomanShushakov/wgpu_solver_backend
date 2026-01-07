@@ -58,7 +58,7 @@ pub async fn readback_to_vec<T: Pod>(
 pub async fn read_mapped_buffer_to_vec<T: Pod>(
     device: &Device,
     buffer: &Buffer,
-    len: usize,
+    _len: usize,
 ) -> Vec<T> {
     let slice = buffer.slice(..);
 

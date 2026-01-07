@@ -156,7 +156,7 @@ impl VecOpsExecutor {
         pass.set_bind_group(0, &bind_group, &[]);
 
         let workgroup_size = 256u32;
-        pass.dispatch_workgroups((n + workgroup_size - 1) / workgroup_size, 1, 1);
+        pass.dispatch_workgroups(n.div_ceil(workgroup_size), 1, 1);
     }
 
     /// Encode: y = y + scalar_results[scalar_index] * x.
@@ -193,7 +193,7 @@ impl VecOpsExecutor {
         pass.set_bind_group(0, &bind_group, &[]);
 
         let workgroup_size = 256u32;
-        pass.dispatch_workgroups((n + workgroup_size - 1) / workgroup_size, 1, 1);
+        pass.dispatch_workgroups(n.div_ceil(workgroup_size), 1, 1);
     }
 
     /// Encode: x = x * scalar_results[scalar_index].
@@ -228,7 +228,7 @@ impl VecOpsExecutor {
         pass.set_bind_group(0, &bind_group, &[]);
 
         let workgroup_size = 256u32;
-        pass.dispatch_workgroups((n + workgroup_size - 1) / workgroup_size, 1, 1);
+        pass.dispatch_workgroups(n.div_ceil(workgroup_size), 1, 1);
     }
 
     /// Call this at the start of each "iteration" (or before encoding a batch)

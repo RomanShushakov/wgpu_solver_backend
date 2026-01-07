@@ -129,7 +129,7 @@ impl SpmvExecutor {
         pass.set_bind_group(0, &self.spmv_bind_group, &[]);
 
         let workgroup_size = 256u32;
-        let groups_x = (self.n_rows + workgroup_size - 1) / workgroup_size;
+        let groups_x = self.n_rows.div_ceil(workgroup_size);
         pass.dispatch_workgroups(groups_x, 1, 1);
     }
 

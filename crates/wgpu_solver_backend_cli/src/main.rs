@@ -448,12 +448,11 @@ fn write_x_bin(path: &str, x: &[f32]) -> Result<(), String> {
     use std::path::Path;
 
     let p = Path::new(path);
-    if let Some(parent) = p.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = p.parent()
+        && !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
         }
-    }
 
     let mut f = File::create(p).map_err(|e| format!("create {}: {e}", p.display()))?;
     let n = x.len() as u32;
@@ -466,12 +465,11 @@ fn write_x_bin(path: &str, x: &[f32]) -> Result<(), String> {
 
 fn write_json(path: &str, json: &str) -> Result<(), String> {
     let p = Path::new(path);
-    if let Some(parent) = p.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = p.parent()
+        && !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
         }
-    }
 
     fs::write(p, json).map_err(|e| format!("write {}: {e}", p.display()))
 }
